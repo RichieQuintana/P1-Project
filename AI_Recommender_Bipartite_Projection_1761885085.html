@@ -1,0 +1,1337 @@
+<h1 id="recommender-system-with-bipartite-network-projection-amazon-reviews-electronics">Recommender System with Bipartite Network Projection (Amazon Reviews – Electronics)</h1>
+<p><strong>U = Users</strong>, <strong>V = Products</strong> · Bipartite → Product–Product projection → Top‑N neighbors</p>
+<h2 id="overview">1. Overview</h2>
+<p>We build a simple <strong>collaborative</strong> recommender by modeling the <strong>user–product</strong> relations as a <strong>bipartite</strong> graph and projecting it onto products. - Keep strong signals (default: <strong>5★ reviews</strong>) and optionally filter by <strong>minimum degree</strong> to reduce noise/size. - Compute the <strong>product–product</strong> network: two products are connected with weight = number of <strong>shared users</strong> who gave positive ratings. - Given a selected product <code>p</code>, return its <strong>Top‑N neighbors</strong> by edge weight and visualize a <strong>star</strong> (center = <code>p</code>, neighbors around).</p>
+<blockquote>
+<p>This notebook is self‑contained, robust to column names (<code>userId</code>, <code>UserID</code>, etc.) and provides a fallback visualization if Plotly is not available.</p>
+</blockquote>
+<h2 id="imports">2. Imports</h2>
+<p>This cell imports necessary libraries for data manipulation, network analysis, sparse matrix operations, visualization, and interactive widgets. It also defines the path to the dataset and checks for its existence.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true"></a><span class="co"># 2. Imports</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true"></a><span class="im">import</span> sys, os, math</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true"></a><span class="im">import</span> pandas <span class="im">as</span> pd</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true"></a></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true"></a><span class="co"># Network/graphs</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true"></a><span class="im">import</span> networkx <span class="im">as</span> nx</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true"></a><span class="im">from</span> networkx.algorithms <span class="im">import</span> bipartite</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true"></a></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true"></a><span class="co"># Sparse ops for efficient projection (optional but recommended)</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true"></a><span class="im">from</span> scipy.sparse <span class="im">import</span> csr_matrix</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true"></a></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true"></a><span class="co"># Visualization</span></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true"></a><span class="im">import</span> matplotlib.pyplot <span class="im">as</span> plt</span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true"></a></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true"></a><span class="co"># Widgets / interactivity (works in Jupyter; HTML export will be static)</span></span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true"></a><span class="cf">try</span>:</span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true"></a>    <span class="im">import</span> ipywidgets <span class="im">as</span> widgets</span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true"></a>    <span class="im">from</span> IPython.display <span class="im">import</span> display, HTML, clear_output</span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true"></a>    WIDGETS_AVAILABLE <span class="op">=</span> <span class="va">True</span></span>
+<span id="cb1-21"><a href="#cb1-21" aria-hidden="true"></a><span class="cf">except</span> <span class="pp">Exception</span> <span class="im">as</span> e:</span>
+<span id="cb1-22"><a href="#cb1-22" aria-hidden="true"></a>    WIDGETS_AVAILABLE <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb1-23"><a href="#cb1-23" aria-hidden="true"></a>    <span class="bu">print</span>(<span class="st">&quot;ipywidgets not available; using static controls only.&quot;</span>)</span>
+<span id="cb1-24"><a href="#cb1-24" aria-hidden="true"></a></span>
+<span id="cb1-25"><a href="#cb1-25" aria-hidden="true"></a><span class="co"># Optional interactive drawing with Plotly (fallback to Matplotlib if missing)</span></span>
+<span id="cb1-26"><a href="#cb1-26" aria-hidden="true"></a><span class="cf">try</span>:</span>
+<span id="cb1-27"><a href="#cb1-27" aria-hidden="true"></a>    <span class="im">import</span> plotly.graph_objects <span class="im">as</span> go</span>
+<span id="cb1-28"><a href="#cb1-28" aria-hidden="true"></a>    <span class="im">from</span> plotly.subplots <span class="im">import</span> make_subplots</span>
+<span id="cb1-29"><a href="#cb1-29" aria-hidden="true"></a>    PLOTLY_AVAILABLE <span class="op">=</span> <span class="va">True</span></span>
+<span id="cb1-30"><a href="#cb1-30" aria-hidden="true"></a><span class="cf">except</span> <span class="pp">Exception</span> <span class="im">as</span> e:</span>
+<span id="cb1-31"><a href="#cb1-31" aria-hidden="true"></a>    PLOTLY_AVAILABLE <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb1-32"><a href="#cb1-32" aria-hidden="true"></a>    <span class="bu">print</span>(<span class="st">&quot;plotly not available; falling back to matplotlib.&quot;</span>)</span>
+<span id="cb1-33"><a href="#cb1-33" aria-hidden="true"></a></span>
+<span id="cb1-34"><a href="#cb1-34" aria-hidden="true"></a>DATA_PATH <span class="op">=</span> <span class="st">&#39;/mnt/data/ratings_Electronics.csv&#39;</span>  <span class="co"># uploaded dataset</span></span>
+<span id="cb1-35"><a href="#cb1-35" aria-hidden="true"></a><span class="cf">assert</span> os.path.exists(DATA_PATH), <span class="ss">f&quot;Dataset not found at </span><span class="sc">{</span>DATA_PATH<span class="sc">}</span><span class="ss">&quot;</span></span>
+<span id="cb1-36"><a href="#cb1-36" aria-hidden="true"></a><span class="bu">print</span>(<span class="st">&#39;Using dataset:&#39;</span>, DATA_PATH)</span></code></pre></div>
+<pre><code>Using dataset: /mnt/data/ratings_Electronics.csv</code></pre>
+<h2 id="load-inspect">3. Load &amp; inspect</h2>
+<p>This cell loads the dataset into a pandas DataFrame, assigns column names, and displays basic information about the data, including column names, the head of the DataFrame, and data types. It then selects only the essential columns (<code>userId</code>, <code>productId</code>, <code>rating</code>) and drops any rows with missing values.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true"></a><span class="co"># 3. Load &amp; inspect</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true"></a>df <span class="op">=</span> pd.read_csv(DATA_PATH, header<span class="op">=</span><span class="va">None</span>, names<span class="op">=</span>[<span class="st">&#39;userId&#39;</span>, <span class="st">&#39;productId&#39;</span>, <span class="st">&#39;rating&#39;</span>, <span class="st">&#39;timestamp&#39;</span>])</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true"></a><span class="co"># Mostrar información básica</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true"></a><span class="bu">print</span>(<span class="st">&quot;Columnas:&quot;</span>, df.columns.tolist())</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true"></a><span class="bu">print</span>(df.head())</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true"></a><span class="bu">print</span>(df.info())</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true"></a></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true"></a><span class="co"># Seleccionar solo las columnas necesarias</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true"></a>COL_USER <span class="op">=</span> <span class="st">&#39;userId&#39;</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true"></a>COL_ITEM <span class="op">=</span> <span class="st">&#39;productId&#39;</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true"></a>COL_RATING <span class="op">=</span> <span class="st">&#39;rating&#39;</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true"></a></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true"></a>df <span class="op">=</span> df[[COL_USER, COL_ITEM, COL_RATING]].dropna()</span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true"></a>df.head()</span></code></pre></div>
+<pre><code>Columnas: [&#39;userId&#39;, &#39;productId&#39;, &#39;rating&#39;, &#39;timestamp&#39;]
+           userId   productId  rating   timestamp
+0   AKM1MP6P0OYPR  0132793040     5.0  1365811200
+1  A2CX7LUOHB2NDG  0321732944     5.0  1341100800
+2  A2NWSAGRHCP8N5  0439886341     1.0  1367193600
+3  A2WNBOD3WNDNKT  0439886341     3.0  1374451200
+4  A1GI0U4ZRJA8WN  0439886341     1.0  1334707200
+&lt;class &#39;pandas.core.frame.DataFrame&#39;&gt;
+RangeIndex: 7824482 entries, 0 to 7824481
+Data columns (total 4 columns):
+ #   Column     Dtype  
+---  ------     -----  
+ 0   userId     object 
+ 1   productId  object 
+ 2   rating     float64
+ 3   timestamp  int64  
+dtypes: float64(1), int64(1), object(2)
+memory usage: 238.8+ MB
+None</code></pre>
+<div id="df-08679703-2092-4d0f-8fe6-d53d46c2326c" class="colab-df-container">
+<pre><code>&lt;div&gt;</code></pre>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+<thead>
+<tr style="text-align: right;">
+<th>
+</th>
+<th>
+userId
+</th>
+<th>
+productId
+</th>
+<th>
+rating
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<th>
+0
+</th>
+<td>
+AKM1MP6P0OYPR
+</td>
+<td>
+0132793040
+</td>
+<td>
+5.0
+</td>
+</tr>
+<tr>
+<th>
+1
+</th>
+<td>
+A2CX7LUOHB2NDG
+</td>
+<td>
+0321732944
+</td>
+<td>
+5.0
+</td>
+</tr>
+<tr>
+<th>
+2
+</th>
+<td>
+A2NWSAGRHCP8N5
+</td>
+<td>
+0439886341
+</td>
+<td>
+1.0
+</td>
+</tr>
+<tr>
+<th>
+3
+</th>
+<td>
+A2WNBOD3WNDNKT
+</td>
+<td>
+0439886341
+</td>
+<td>
+3.0
+</td>
+</tr>
+<tr>
+<th>
+4
+</th>
+<td>
+A1GI0U4ZRJA8WN
+</td>
+<td>
+0439886341
+</td>
+<td>
+1.0
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<pre><code>&lt;div class=&quot;colab-df-buttons&quot;&gt;</code></pre>
+<div class="colab-df-container">
+<pre><code>&lt;button class=&quot;colab-df-convert&quot; onclick=&quot;convertToInteractive(&#39;df-08679703-2092-4d0f-8fe6-d53d46c2326c&#39;)&quot;
+        title=&quot;Convert this dataframe to an interactive table.&quot;
+        style=&quot;display:none;&quot;&gt;</code></pre>
+<p><svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960"> <path d="M120-120v-720h720v720H120Zm60-500h600v-160H180v160Zm220 220h160v-160H400v160Zm0 220h160v-160H400v160ZM180-400h160v-160H180v160Zm440 0h160v-160H620v160ZM180-180h160v-160H180v160Zm440 0h160v-160H620v160Z"/> </svg> </button></p>
+<style>
+    .colab-df-container {
+      display:flex;
+      gap: 12px;
+    }
+
+    .colab-df-convert {
+      background-color: #E8F0FE;
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      display: none;
+      fill: #1967D2;
+      height: 32px;
+      padding: 0 0 0 0;
+      width: 32px;
+    }
+
+    .colab-df-convert:hover {
+      background-color: #E2EBFA;
+      box-shadow: 0px 1px 2px rgba(60, 64, 67, 0.3), 0px 1px 3px 1px rgba(60, 64, 67, 0.15);
+      fill: #174EA6;
+    }
+
+    .colab-df-buttons div {
+      margin-bottom: 4px;
+    }
+
+    [theme=dark] .colab-df-convert {
+      background-color: #3B4455;
+      fill: #D2E3FC;
+    }
+
+    [theme=dark] .colab-df-convert:hover {
+      background-color: #434B5C;
+      box-shadow: 0px 1px 3px 1px rgba(0, 0, 0, 0.15);
+      filter: drop-shadow(0px 1px 2px rgba(0, 0, 0, 0.3));
+      fill: #FFFFFF;
+    }
+  </style>
+<pre><code>&lt;script&gt;
+  const buttonEl =
+    document.querySelector(&#39;#df-08679703-2092-4d0f-8fe6-d53d46c2326c button.colab-df-convert&#39;);
+  buttonEl.style.display =
+    google.colab.kernel.accessAllowed ? &#39;block&#39; : &#39;none&#39;;
+
+  async function convertToInteractive(key) {
+    const element = document.querySelector(&#39;#df-08679703-2092-4d0f-8fe6-d53d46c2326c&#39;);
+    const dataTable =
+      await google.colab.kernel.invokeFunction(&#39;convertToInteractive&#39;,
+                                                [key], {});
+    if (!dataTable) return;
+
+    const docLinkHtml = &#39;Like what you see? Visit the &#39; +
+      &#39;&lt;a target=&quot;_blank&quot; href=https://colab.research.google.com/notebooks/data_table.ipynb&gt;data table notebook&lt;/a&gt;&#39;
+      + &#39; to learn more about interactive tables.&#39;;
+    element.innerHTML = &#39;&#39;;
+    dataTable[&#39;output_type&#39;] = &#39;display_data&#39;;
+    await google.colab.output.renderOutput(dataTable, element);
+    const docLink = document.createElement(&#39;div&#39;);
+    docLink.innerHTML = docLinkHtml;
+    element.appendChild(docLink);
+  }
+&lt;/script&gt;</code></pre>
+</div>
+<pre><code>&lt;div id=&quot;df-eb90f7ac-7d67-433a-afbd-c7f40352782c&quot;&gt;
+  &lt;button class=&quot;colab-df-quickchart&quot; onclick=&quot;quickchart(&#39;df-eb90f7ac-7d67-433a-afbd-c7f40352782c&#39;)&quot;
+            title=&quot;Suggest charts&quot;
+            style=&quot;display:none;&quot;&gt;</code></pre>
+<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px">
+<g> <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/> </g>
+</svg>
+<pre><code>  &lt;/button&gt;</code></pre>
+<style>
+  .colab-df-quickchart {
+      --bg-color: #E8F0FE;
+      --fill-color: #1967D2;
+      --hover-bg-color: #E2EBFA;
+      --hover-fill-color: #174EA6;
+      --disabled-fill-color: #AAA;
+      --disabled-bg-color: #DDD;
+  }
+
+  [theme=dark] .colab-df-quickchart {
+      --bg-color: #3B4455;
+      --fill-color: #D2E3FC;
+      --hover-bg-color: #434B5C;
+      --hover-fill-color: #FFFFFF;
+      --disabled-bg-color: #3B4455;
+      --disabled-fill-color: #666;
+  }
+
+  .colab-df-quickchart {
+    background-color: var(--bg-color);
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: none;
+    fill: var(--fill-color);
+    height: 32px;
+    padding: 0;
+    width: 32px;
+  }
+
+  .colab-df-quickchart:hover {
+    background-color: var(--hover-bg-color);
+    box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+    fill: var(--button-hover-fill-color);
+  }
+
+  .colab-df-quickchart-complete:disabled,
+  .colab-df-quickchart-complete:disabled:hover {
+    background-color: var(--disabled-bg-color);
+    fill: var(--disabled-fill-color);
+    box-shadow: none;
+  }
+
+  .colab-df-spinner {
+    border: 2px solid var(--fill-color);
+    border-color: transparent;
+    border-bottom-color: var(--fill-color);
+    animation:
+      spin 1s steps(1) infinite;
+  }
+
+  @keyframes spin {
+    0% {
+      border-color: transparent;
+      border-bottom-color: var(--fill-color);
+      border-left-color: var(--fill-color);
+    }
+    20% {
+      border-color: transparent;
+      border-left-color: var(--fill-color);
+      border-top-color: var(--fill-color);
+    }
+    30% {
+      border-color: transparent;
+      border-left-color: var(--fill-color);
+      border-top-color: var(--fill-color);
+      border-right-color: var(--fill-color);
+    }
+    40% {
+      border-color: transparent;
+      border-right-color: var(--fill-color);
+      border-top-color: var(--fill-color);
+    }
+    60% {
+      border-color: transparent;
+      border-right-color: var(--fill-color);
+    }
+    80% {
+      border-color: transparent;
+      border-right-color: var(--fill-color);
+      border-bottom-color: var(--fill-color);
+    }
+    90% {
+      border-color: transparent;
+      border-bottom-color: var(--fill-color);
+    }
+  }
+</style>
+<pre><code>  &lt;script&gt;
+    async function quickchart(key) {
+      const quickchartButtonEl =
+        document.querySelector(&#39;#&#39; + key + &#39; button&#39;);
+      quickchartButtonEl.disabled = true;  // To prevent multiple clicks.
+      quickchartButtonEl.classList.add(&#39;colab-df-spinner&#39;);
+      try {
+        const charts = await google.colab.kernel.invokeFunction(
+            &#39;suggestCharts&#39;, [key], {});
+      } catch (error) {
+        console.error(&#39;Error during call to suggestCharts:&#39;, error);
+      }
+      quickchartButtonEl.classList.remove(&#39;colab-df-spinner&#39;);
+      quickchartButtonEl.classList.add(&#39;colab-df-quickchart-complete&#39;);
+    }
+    (() =&gt; {
+      let quickchartButtonEl =
+        document.querySelector(&#39;#df-eb90f7ac-7d67-433a-afbd-c7f40352782c button&#39;);
+      quickchartButtonEl.style.display =
+        google.colab.kernel.accessAllowed ? &#39;block&#39; : &#39;none&#39;;
+    })();
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;/div&gt;</code></pre>
+</div>
+<h2 id="trim-dataset">4. Trim Dataset</h2>
+<p>This cell filters the DataFrame to keep only reviews with a rating of 5.0 (strong positive signals) and removes duplicate user-product interactions. It then prints the number of rows, unique users, and unique items remaining after the filtering.</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true"></a><span class="co"># 4. Trim dataset (solo 5★, sin filtros de grado, sin duplicados) -- NUEVO CODIGO</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true"></a>MIN_RATING <span class="op">=</span> <span class="fl">5.0</span>  <span class="co"># mantener señales fuertes</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true"></a></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true"></a>pos <span class="op">=</span> df[df[COL_RATING] <span class="op">&gt;=</span> MIN_RATING].copy()</span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true"></a></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true"></a><span class="co"># No duplicar (usuario, producto)</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true"></a>pos <span class="op">=</span> pos.drop_duplicates(subset<span class="op">=</span>[COL_USER, COL_ITEM])</span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true"></a></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true"></a><span class="bu">print</span>(</span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true"></a>    <span class="ss">f&quot;Rows after filters: </span><span class="sc">{</span><span class="bu">len</span>(pos)<span class="sc">}</span><span class="ss"> &quot;</span></span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true"></a>    <span class="ss">f&quot;(users=</span><span class="sc">{</span>pos[COL_USER]<span class="sc">.</span>nunique()<span class="sc">}</span><span class="ss">, items=</span><span class="sc">{</span>pos[COL_ITEM]<span class="sc">.</span>nunique()<span class="sc">}</span><span class="ss">)&quot;</span></span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true"></a>)</span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true"></a>pos.head()</span></code></pre></div>
+<pre><code>Rows after filters: 4347541 (users=2597345, items=358458)</code></pre>
+<div id="df-17cc879a-285e-4849-b43c-ec2b9fee9e10" class="colab-df-container">
+<pre><code>&lt;div&gt;</code></pre>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+<thead>
+<tr style="text-align: right;">
+<th>
+</th>
+<th>
+userId
+</th>
+<th>
+productId
+</th>
+<th>
+rating
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<th>
+0
+</th>
+<td>
+AKM1MP6P0OYPR
+</td>
+<td>
+0132793040
+</td>
+<td>
+5.0
+</td>
+</tr>
+<tr>
+<th>
+1
+</th>
+<td>
+A2CX7LUOHB2NDG
+</td>
+<td>
+0321732944
+</td>
+<td>
+5.0
+</td>
+</tr>
+<tr>
+<th>
+5
+</th>
+<td>
+A1QGNMC6O1VW39
+</td>
+<td>
+0511189877
+</td>
+<td>
+5.0
+</td>
+</tr>
+<tr>
+<th>
+7
+</th>
+<td>
+A2TY0BTJOTENPG
+</td>
+<td>
+0511189877
+</td>
+<td>
+5.0
+</td>
+</tr>
+<tr>
+<th>
+8
+</th>
+<td>
+A34ATBPOK6HCHY
+</td>
+<td>
+0511189877
+</td>
+<td>
+5.0
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<pre><code>&lt;div class=&quot;colab-df-buttons&quot;&gt;</code></pre>
+<div class="colab-df-container">
+<pre><code>&lt;button class=&quot;colab-df-convert&quot; onclick=&quot;convertToInteractive(&#39;df-17cc879a-285e-4849-b43c-ec2b9fee9e10&#39;)&quot;
+        title=&quot;Convert this dataframe to an interactive table.&quot;
+        style=&quot;display:none;&quot;&gt;</code></pre>
+<p><svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960"> <path d="M120-120v-720h720v720H120Zm60-500h600v-160H180v160Zm220 220h160v-160H400v160Zm0 220h160v-160H400v160ZM180-400h160v-160H180v160Zm440 0h160v-160H620v160ZM180-180h160v-160H180v160Zm440 0h160v-160H620v160Z"/> </svg> </button></p>
+<style>
+    .colab-df-container {
+      display:flex;
+      gap: 12px;
+    }
+
+    .colab-df-convert {
+      background-color: #E8F0FE;
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      display: none;
+      fill: #1967D2;
+      height: 32px;
+      padding: 0 0 0 0;
+      width: 32px;
+    }
+
+    .colab-df-convert:hover {
+      background-color: #E2EBFA;
+      box-shadow: 0px 1px 2px rgba(60, 64, 67, 0.3), 0px 1px 3px 1px rgba(60, 64, 67, 0.15);
+      fill: #174EA6;
+    }
+
+    .colab-df-buttons div {
+      margin-bottom: 4px;
+    }
+
+    [theme=dark] .colab-df-convert {
+      background-color: #3B4455;
+      fill: #D2E3FC;
+    }
+
+    [theme=dark] .colab-df-convert:hover {
+      background-color: #434B5C;
+      box-shadow: 0px 1px 3px 1px rgba(0, 0, 0, 0.15);
+      filter: drop-shadow(0px 1px 2px rgba(0, 0, 0, 0.3));
+      fill: #FFFFFF;
+    }
+  </style>
+<pre><code>&lt;script&gt;
+  const buttonEl =
+    document.querySelector(&#39;#df-17cc879a-285e-4849-b43c-ec2b9fee9e10 button.colab-df-convert&#39;);
+  buttonEl.style.display =
+    google.colab.kernel.accessAllowed ? &#39;block&#39; : &#39;none&#39;;
+
+  async function convertToInteractive(key) {
+    const element = document.querySelector(&#39;#df-17cc879a-285e-4849-b43c-ec2b9fee9e10&#39;);
+    const dataTable =
+      await google.colab.kernel.invokeFunction(&#39;convertToInteractive&#39;,
+                                                [key], {});
+    if (!dataTable) return;
+
+    const docLinkHtml = &#39;Like what you see? Visit the &#39; +
+      &#39;&lt;a target=&quot;_blank&quot; href=https://colab.research.google.com/notebooks/data_table.ipynb&gt;data table notebook&lt;/a&gt;&#39;
+      + &#39; to learn more about interactive tables.&#39;;
+    element.innerHTML = &#39;&#39;;
+    dataTable[&#39;output_type&#39;] = &#39;display_data&#39;;
+    await google.colab.output.renderOutput(dataTable, element);
+    const docLink = document.createElement(&#39;div&#39;);
+    docLink.innerHTML = docLinkHtml;
+    element.appendChild(docLink);
+  }
+&lt;/script&gt;</code></pre>
+</div>
+<pre><code>&lt;div id=&quot;df-90103e33-a3ab-472f-972b-66732935a2e2&quot;&gt;
+  &lt;button class=&quot;colab-df-quickchart&quot; onclick=&quot;quickchart(&#39;df-90103e33-a3ab-472f-972b-66732935a2e2&#39;)&quot;
+            title=&quot;Suggest charts&quot;
+            style=&quot;display:none;&quot;&gt;</code></pre>
+<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px">
+<g> <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/> </g>
+</svg>
+<pre><code>  &lt;/button&gt;</code></pre>
+<style>
+  .colab-df-quickchart {
+      --bg-color: #E8F0FE;
+      --fill-color: #1967D2;
+      --hover-bg-color: #E2EBFA;
+      --hover-fill-color: #174EA6;
+      --disabled-fill-color: #AAA;
+      --disabled-bg-color: #DDD;
+  }
+
+  [theme=dark] .colab-df-quickchart {
+      --bg-color: #3B4455;
+      --fill-color: #D2E3FC;
+      --hover-bg-color: #434B5C;
+      --hover-fill-color: #FFFFFF;
+      --disabled-bg-color: #3B4455;
+      --disabled-fill-color: #666;
+  }
+
+  .colab-df-quickchart {
+    background-color: var(--bg-color);
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: none;
+    fill: var(--fill-color);
+    height: 32px;
+    padding: 0;
+    width: 32px;
+  }
+
+  .colab-df-quickchart:hover {
+    background-color: var(--hover-bg-color);
+    box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+    fill: var(--button-hover-fill-color);
+  }
+
+  .colab-df-quickchart-complete:disabled,
+  .colab-df-quickchart-complete:disabled:hover {
+    background-color: var(--disabled-bg-color);
+    fill: var(--disabled-fill-color);
+    box-shadow: none;
+  }
+
+  .colab-df-spinner {
+    border: 2px solid var(--fill-color);
+    border-color: transparent;
+    border-bottom-color: var(--fill-color);
+    animation:
+      spin 1s steps(1) infinite;
+  }
+
+  @keyframes spin {
+    0% {
+      border-color: transparent;
+      border-bottom-color: var(--fill-color);
+      border-left-color: var(--fill-color);
+    }
+    20% {
+      border-color: transparent;
+      border-left-color: var(--fill-color);
+      border-top-color: var(--fill-color);
+    }
+    30% {
+      border-color: transparent;
+      border-left-color: var(--fill-color);
+      border-top-color: var(--fill-color);
+      border-right-color: var(--fill-color);
+    }
+    40% {
+      border-color: transparent;
+      border-right-color: var(--fill-color);
+      border-top-color: var(--fill-color);
+    }
+    60% {
+      border-color: transparent;
+      border-right-color: var(--fill-color);
+    }
+    80% {
+      border-color: transparent;
+      border-right-color: var(--fill-color);
+      border-bottom-color: var(--fill-color);
+    }
+    90% {
+      border-color: transparent;
+      border-bottom-color: var(--fill-color);
+    }
+  }
+</style>
+<pre><code>  &lt;script&gt;
+    async function quickchart(key) {
+      const quickchartButtonEl =
+        document.querySelector(&#39;#&#39; + key + &#39; button&#39;);
+      quickchartButtonEl.disabled = true;  // To prevent multiple clicks.
+      quickchartButtonEl.classList.add(&#39;colab-df-spinner&#39;);
+      try {
+        const charts = await google.colab.kernel.invokeFunction(
+            &#39;suggestCharts&#39;, [key], {});
+      } catch (error) {
+        console.error(&#39;Error during call to suggestCharts:&#39;, error);
+      }
+      quickchartButtonEl.classList.remove(&#39;colab-df-spinner&#39;);
+      quickchartButtonEl.classList.add(&#39;colab-df-quickchart-complete&#39;);
+    }
+    (() =&gt; {
+      let quickchartButtonEl =
+        document.querySelector(&#39;#df-90103e33-a3ab-472f-972b-66732935a2e2 button&#39;);
+      quickchartButtonEl.style.display =
+        google.colab.kernel.accessAllowed ? &#39;block&#39; : &#39;none&#39;;
+    })();
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;/div&gt;</code></pre>
+</div>
+<h2 id="build-product-product-graph">5. Build Product-Product Graph</h2>
+<p>This cell re-indexes users and items using categorical codes for efficient matrix representation. It then creates a sparse user-item matrix (<code>UI</code>) and projects it onto the item space to create a product-product matrix (<code>II</code>), where the weight of an edge between two products represents the number of shared users who rated both products positively. Finally, it converts this matrix into a NetworkX graph (<code>G_items</code>) and prints its number of nodes and edges.</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true"></a><span class="co">#5 Re-index users/items</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true"></a>users <span class="op">=</span> pos[COL_USER].astype(<span class="st">&#39;category&#39;</span>)</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true"></a>items <span class="op">=</span> pos[COL_ITEM].astype(<span class="st">&#39;category&#39;</span>)</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true"></a>u_index <span class="op">=</span> users.cat.codes.values</span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true"></a>i_index <span class="op">=</span> items.cat.codes.values</span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true"></a></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true"></a><span class="im">from</span> scipy.sparse <span class="im">import</span> csr_matrix</span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true"></a>UI <span class="op">=</span> csr_matrix(</span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true"></a>    (np.ones(<span class="bu">len</span>(pos), dtype<span class="op">=</span>np.uint8), (u_index, i_index)),</span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true"></a>    shape<span class="op">=</span>(users.cat.categories.size, items.cat.categories.size)</span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true"></a>)</span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true"></a></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true"></a><span class="co"># Proyección producto–producto por usuarios compartidos</span></span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true"></a>II <span class="op">=</span> UI.T <span class="op">@</span> UI</span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true"></a>II.setdiag(<span class="dv">0</span>)</span>
+<span id="cb21-16"><a href="#cb21-16" aria-hidden="true"></a></span>
+<span id="cb21-17"><a href="#cb21-17" aria-hidden="true"></a><span class="co"># Pasar a grafo</span></span>
+<span id="cb21-18"><a href="#cb21-18" aria-hidden="true"></a>id_from_code <span class="op">=</span> <span class="bu">dict</span>(<span class="bu">enumerate</span>(items.cat.categories))</span>
+<span id="cb21-19"><a href="#cb21-19" aria-hidden="true"></a>G_items <span class="op">=</span> nx.Graph()</span>
+<span id="cb21-20"><a href="#cb21-20" aria-hidden="true"></a><span class="cf">for</span> j <span class="kw">in</span> <span class="bu">range</span>(<span class="bu">len</span>(id_from_code)):</span>
+<span id="cb21-21"><a href="#cb21-21" aria-hidden="true"></a>    G_items.add_node(id_from_code[j])</span>
+<span id="cb21-22"><a href="#cb21-22" aria-hidden="true"></a></span>
+<span id="cb21-23"><a href="#cb21-23" aria-hidden="true"></a>rows, cols <span class="op">=</span> II.nonzero()</span>
+<span id="cb21-24"><a href="#cb21-24" aria-hidden="true"></a>weights <span class="op">=</span> II[rows, cols].A1</span>
+<span id="cb21-25"><a href="#cb21-25" aria-hidden="true"></a><span class="cf">for</span> r, c, w <span class="kw">in</span> <span class="bu">zip</span>(rows, cols, weights):</span>
+<span id="cb21-26"><a href="#cb21-26" aria-hidden="true"></a>    <span class="cf">if</span> r <span class="op">&lt;</span> c:  <span class="co"># cada arista una vez</span></span>
+<span id="cb21-27"><a href="#cb21-27" aria-hidden="true"></a>        G_items.add_edge(id_from_code[r], id_from_code[c], weight<span class="op">=</span><span class="bu">int</span>(w))</span>
+<span id="cb21-28"><a href="#cb21-28" aria-hidden="true"></a></span>
+<span id="cb21-29"><a href="#cb21-29" aria-hidden="true"></a><span class="bu">print</span>(<span class="ss">f&quot;G_items: </span><span class="sc">{</span>G_items<span class="sc">.</span>number_of_nodes()<span class="sc">}</span><span class="ss"> nodes, </span><span class="sc">{</span>G_items<span class="sc">.</span>number_of_edges()<span class="sc">}</span><span class="ss"> edges&quot;</span>)</span></code></pre></div>
+<pre><code>G_items: 358458 nodes, 7185546 edges</code></pre>
+<h2 id="recommendation-helpers">6. Recommendation Helpers</h2>
+<p>This cell defines a helper function <code>top_n_neighbors</code> to find the top N neighbors for a given product in the graph. The neighbors are sorted by weight in descending order and then by product ID in ascending order for deterministic results. It also identifies the product with the highest degree in the graph as a default product to inspect.</p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true"></a><span class="co"># 6. Recommendation helpers</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true"></a></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true"></a><span class="kw">def</span> top_n_neighbors(G, product_id, n<span class="op">=</span><span class="dv">10</span>):</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true"></a>    <span class="co">&quot;&quot;&quot;</span></span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true"></a><span class="co">    Ordena por peso desc y, en empate, por ID asc (determinista).</span></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true"></a>    <span class="cf">if</span> product_id <span class="kw">not</span> <span class="kw">in</span> G:</span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true"></a>        <span class="cf">return</span> []</span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true"></a>    nbrs <span class="op">=</span> [(v, d.get(<span class="st">&#39;weight&#39;</span>, <span class="dv">1</span>)) <span class="cf">for</span> v, d <span class="kw">in</span> G[product_id].items()]</span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true"></a>    nbrs.sort(key<span class="op">=</span><span class="kw">lambda</span> x: (<span class="op">-</span>x[<span class="dv">1</span>], <span class="bu">str</span>(x[<span class="dv">0</span>])))</span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true"></a>    <span class="cf">return</span> nbrs[:n]</span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true"></a></span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true"></a><span class="co"># Pick a default product (most connected) to start</span></span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true"></a>default_item <span class="op">=</span> <span class="bu">max</span>(G_items.degree(weight<span class="op">=</span><span class="va">None</span>), key<span class="op">=</span><span class="kw">lambda</span> x: x[<span class="dv">1</span>])[<span class="dv">0</span>]</span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true"></a><span class="bu">print</span>(<span class="st">&#39;Default product to inspect:&#39;</span>, default_item)</span>
+<span id="cb23-16"><a href="#cb23-16" aria-hidden="true"></a>top_n_neighbors(G_items, default_item, n<span class="op">=</span><span class="dv">5</span>)</span>
+<span id="cb23-17"><a href="#cb23-17" aria-hidden="true"></a></span>
+<span id="cb23-18"><a href="#cb23-18" aria-hidden="true"></a></span>
+<span id="cb23-19"><a href="#cb23-19" aria-hidden="true"></a></span></code></pre></div>
+<pre><code>Default product to inspect: B007WTAJTO
+
+
+
+
+
+[(&#39;B00AAIPT76&#39;, 165),
+ (&#39;B003ES5ZUU&#39;, 161),
+ (&#39;B00DR0PDNE&#39;, 133),
+ (&#39;B000QUUFRW&#39;, 126),
+ (&#39;B005FYNSPK&#39;, 117)]</code></pre>
+<h2 id="visualization-star-network">7. Visualization: Star Network</h2>
+<p>This cell provides two functions (<code>plot_star_matplotlib</code> and <code>plot_star_plotly</code>) to visualize the star network around a given product, showing its top N neighbors and the edge weights. It uses Matplotlib as a fallback if Plotly is not available. A quick demo with the default product is shown.</p>
+<div class="sourceCode" id="cb25"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true"></a><span class="co"># 7. Visualization: star network (product center + top-n neighbors)</span></span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true"></a></span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true"></a><span class="kw">def</span> plot_star_matplotlib(G, center, n<span class="op">=</span><span class="dv">5</span>):</span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true"></a>    nbrs <span class="op">=</span> top_n_neighbors(G, center, n)</span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true"></a>    fig, ax <span class="op">=</span> plt.subplots(figsize<span class="op">=</span>(<span class="dv">6</span>,<span class="dv">6</span>))</span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true"></a>    <span class="co"># Position center at origin, others on a circle</span></span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true"></a>    positions <span class="op">=</span> {center:(<span class="dv">0</span>,<span class="dv">0</span>)}</span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true"></a>    R <span class="op">=</span> <span class="fl">1.0</span></span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true"></a>    <span class="cf">for</span> k,(nid,_) <span class="kw">in</span> <span class="bu">enumerate</span>(nbrs):</span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true"></a>        angle <span class="op">=</span> <span class="dv">2</span><span class="op">*</span>math.pi<span class="op">*</span>k<span class="op">/</span><span class="bu">max</span>(<span class="dv">1</span>,<span class="bu">len</span>(nbrs))</span>
+<span id="cb25-11"><a href="#cb25-11" aria-hidden="true"></a>        positions[nid] <span class="op">=</span> (R<span class="op">*</span>math.cos(angle), R<span class="op">*</span>math.sin(angle))</span>
+<span id="cb25-12"><a href="#cb25-12" aria-hidden="true"></a></span>
+<span id="cb25-13"><a href="#cb25-13" aria-hidden="true"></a>    <span class="co"># Draw nodes</span></span>
+<span id="cb25-14"><a href="#cb25-14" aria-hidden="true"></a>    nx.draw_networkx_nodes(G, positions, nodelist<span class="op">=</span>[center], node_size<span class="op">=</span><span class="dv">800</span>, node_color<span class="op">=</span><span class="st">&#39;#1f77b4&#39;</span>, ax<span class="op">=</span>ax)</span>
+<span id="cb25-15"><a href="#cb25-15" aria-hidden="true"></a>    nx.draw_networkx_nodes(G, positions, nodelist<span class="op">=</span>[nid <span class="cf">for</span> nid,_ <span class="kw">in</span> nbrs], node_size<span class="op">=</span><span class="dv">500</span>, node_color<span class="op">=</span><span class="st">&#39;#ff7f0e&#39;</span>, ax<span class="op">=</span>ax)</span>
+<span id="cb25-16"><a href="#cb25-16" aria-hidden="true"></a>    <span class="co"># Draw edges (weighted)</span></span>
+<span id="cb25-17"><a href="#cb25-17" aria-hidden="true"></a>    <span class="cf">for</span> nid, w <span class="kw">in</span> nbrs:</span>
+<span id="cb25-18"><a href="#cb25-18" aria-hidden="true"></a>        nx.draw_networkx_edges(G, positions, edgelist<span class="op">=</span>[(center, nid)], width<span class="op">=</span><span class="dv">1</span><span class="op">+</span>math.log1p(w), edge_color<span class="op">=</span><span class="st">&#39;red&#39;</span>, ax<span class="op">=</span>ax)</span>
+<span id="cb25-19"><a href="#cb25-19" aria-hidden="true"></a>    <span class="co"># Labels</span></span>
+<span id="cb25-20"><a href="#cb25-20" aria-hidden="true"></a>    labels <span class="op">=</span> {center:<span class="bu">str</span>(center)}</span>
+<span id="cb25-21"><a href="#cb25-21" aria-hidden="true"></a>    labels.update({nid:<span class="bu">str</span>(nid) <span class="cf">for</span> nid,_ <span class="kw">in</span> nbrs})</span>
+<span id="cb25-22"><a href="#cb25-22" aria-hidden="true"></a>    nx.draw_networkx_labels(G, positions, labels<span class="op">=</span>labels, font_size<span class="op">=</span><span class="dv">8</span>, ax<span class="op">=</span>ax)</span>
+<span id="cb25-23"><a href="#cb25-23" aria-hidden="true"></a>    ax.set_axis_off()</span>
+<span id="cb25-24"><a href="#cb25-24" aria-hidden="true"></a>    ax.set_title(<span class="ss">f&quot;Star for product </span><span class="sc">{</span>center<span class="sc">}</span><span class="ss"> (Top-</span><span class="sc">{n}</span><span class="ss">)&quot;</span>)</span>
+<span id="cb25-25"><a href="#cb25-25" aria-hidden="true"></a>    plt.show()</span>
+<span id="cb25-26"><a href="#cb25-26" aria-hidden="true"></a></span>
+<span id="cb25-27"><a href="#cb25-27" aria-hidden="true"></a><span class="kw">def</span> plot_star_plotly(G, center, n<span class="op">=</span><span class="dv">5</span>):</span>
+<span id="cb25-28"><a href="#cb25-28" aria-hidden="true"></a>    nbrs <span class="op">=</span> top_n_neighbors(G, center, n)</span>
+<span id="cb25-29"><a href="#cb25-29" aria-hidden="true"></a>    positions <span class="op">=</span> {center:(<span class="dv">0</span>,<span class="dv">0</span>)}</span>
+<span id="cb25-30"><a href="#cb25-30" aria-hidden="true"></a>    R <span class="op">=</span> <span class="fl">1.0</span></span>
+<span id="cb25-31"><a href="#cb25-31" aria-hidden="true"></a>    <span class="cf">for</span> k,(nid,_) <span class="kw">in</span> <span class="bu">enumerate</span>(nbrs):</span>
+<span id="cb25-32"><a href="#cb25-32" aria-hidden="true"></a>        angle <span class="op">=</span> <span class="dv">2</span><span class="op">*</span>math.pi<span class="op">*</span>k<span class="op">/</span><span class="bu">max</span>(<span class="dv">1</span>,<span class="bu">len</span>(nbrs))</span>
+<span id="cb25-33"><a href="#cb25-33" aria-hidden="true"></a>        positions[nid] <span class="op">=</span> (R<span class="op">*</span>math.cos(angle), R<span class="op">*</span>math.sin(angle))</span>
+<span id="cb25-34"><a href="#cb25-34" aria-hidden="true"></a></span>
+<span id="cb25-35"><a href="#cb25-35" aria-hidden="true"></a>    <span class="co"># Build edge traces</span></span>
+<span id="cb25-36"><a href="#cb25-36" aria-hidden="true"></a>    edge_x, edge_y <span class="op">=</span> [], []</span>
+<span id="cb25-37"><a href="#cb25-37" aria-hidden="true"></a>    <span class="cf">for</span> nid, w <span class="kw">in</span> nbrs:</span>
+<span id="cb25-38"><a href="#cb25-38" aria-hidden="true"></a>        x0, y0 <span class="op">=</span> positions[center]</span>
+<span id="cb25-39"><a href="#cb25-39" aria-hidden="true"></a>        x1, y1 <span class="op">=</span> positions[nid]</span>
+<span id="cb25-40"><a href="#cb25-40" aria-hidden="true"></a>        edge_x <span class="op">+=</span> [x0, x1, <span class="va">None</span>]</span>
+<span id="cb25-41"><a href="#cb25-41" aria-hidden="true"></a>        edge_y <span class="op">+=</span> [y0, y1, <span class="va">None</span>]</span>
+<span id="cb25-42"><a href="#cb25-42" aria-hidden="true"></a></span>
+<span id="cb25-43"><a href="#cb25-43" aria-hidden="true"></a>    edge_trace <span class="op">=</span> go.Scatter(x<span class="op">=</span>edge_x, y<span class="op">=</span>edge_y, mode<span class="op">=</span><span class="st">&#39;lines&#39;</span>, hoverinfo<span class="op">=</span><span class="st">&#39;none&#39;</span>)</span>
+<span id="cb25-44"><a href="#cb25-44" aria-hidden="true"></a></span>
+<span id="cb25-45"><a href="#cb25-45" aria-hidden="true"></a>    <span class="co"># Node trace</span></span>
+<span id="cb25-46"><a href="#cb25-46" aria-hidden="true"></a>    node_x, node_y, texts, sizes <span class="op">=</span> [], [], [], []</span>
+<span id="cb25-47"><a href="#cb25-47" aria-hidden="true"></a>    <span class="cf">for</span> node <span class="kw">in</span> [center] <span class="op">+</span> [nid <span class="cf">for</span> nid,_ <span class="kw">in</span> nbrs]:</span>
+<span id="cb25-48"><a href="#cb25-48" aria-hidden="true"></a>        x, y <span class="op">=</span> positions[node]</span>
+<span id="cb25-49"><a href="#cb25-49" aria-hidden="true"></a>        node_x.append(x)<span class="op">;</span> node_y.append(y)</span>
+<span id="cb25-50"><a href="#cb25-50" aria-hidden="true"></a>        texts.append(<span class="bu">str</span>(node))</span>
+<span id="cb25-51"><a href="#cb25-51" aria-hidden="true"></a>        sizes.append(<span class="dv">20</span> <span class="cf">if</span> node<span class="op">==</span>center <span class="cf">else</span> <span class="dv">12</span>)</span>
+<span id="cb25-52"><a href="#cb25-52" aria-hidden="true"></a></span>
+<span id="cb25-53"><a href="#cb25-53" aria-hidden="true"></a>    node_trace <span class="op">=</span> go.Scatter(x<span class="op">=</span>node_x, y<span class="op">=</span>node_y, mode<span class="op">=</span><span class="st">&#39;markers+text&#39;</span>,</span>
+<span id="cb25-54"><a href="#cb25-54" aria-hidden="true"></a>                            text<span class="op">=</span>texts, textposition<span class="op">=</span><span class="st">&#39;bottom center&#39;</span>)</span>
+<span id="cb25-55"><a href="#cb25-55" aria-hidden="true"></a></span>
+<span id="cb25-56"><a href="#cb25-56" aria-hidden="true"></a>    fig <span class="op">=</span> go.Figure(data<span class="op">=</span>[edge_trace, node_trace])</span>
+<span id="cb25-57"><a href="#cb25-57" aria-hidden="true"></a>    fig.update_layout(showlegend<span class="op">=</span><span class="va">False</span>, title<span class="op">=</span><span class="ss">f&quot;Star for product </span><span class="sc">{</span>center<span class="sc">}</span><span class="ss"> (Top-</span><span class="sc">{n}</span><span class="ss">)&quot;</span>,</span>
+<span id="cb25-58"><a href="#cb25-58" aria-hidden="true"></a>                      xaxis<span class="op">=</span><span class="bu">dict</span>(visible<span class="op">=</span><span class="va">False</span>), yaxis<span class="op">=</span><span class="bu">dict</span>(visible<span class="op">=</span><span class="va">False</span>))</span>
+<span id="cb25-59"><a href="#cb25-59" aria-hidden="true"></a>    fig.show()</span>
+<span id="cb25-60"><a href="#cb25-60" aria-hidden="true"></a></span>
+<span id="cb25-61"><a href="#cb25-61" aria-hidden="true"></a><span class="co"># Quick demo with default product</span></span>
+<span id="cb25-62"><a href="#cb25-62" aria-hidden="true"></a><span class="cf">if</span> PLOTLY_AVAILABLE:</span>
+<span id="cb25-63"><a href="#cb25-63" aria-hidden="true"></a>    plot_star_plotly(G_items, default_item, n<span class="op">=</span><span class="dv">5</span>)</span>
+<span id="cb25-64"><a href="#cb25-64" aria-hidden="true"></a><span class="cf">else</span>:</span>
+<span id="cb25-65"><a href="#cb25-65" aria-hidden="true"></a>    plot_star_matplotlib(G_items, default_item, n<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
+<html>
+<head>
+<meta charset="utf-8" />
+</head>
+<body>
+<div>
+<pre><code>        &lt;script src=&quot;https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.5/MathJax.js?config=TeX-AMS-MML_SVG&quot;&gt;&lt;/script&gt;&lt;script type=&quot;text/javascript&quot;&gt;if (window.MathJax &amp;&amp; window.MathJax.Hub &amp;&amp; window.MathJax.Hub.Config) {window.MathJax.Hub.Config({SVG: {font: &quot;STIX-Web&quot;}});}&lt;/script&gt;                &lt;script type=&quot;text/javascript&quot;&gt;window.PlotlyConfig = {MathJaxConfig: &#39;local&#39;};&lt;/script&gt;
+    &lt;script charset=&quot;utf-8&quot; src=&quot;https://cdn.plot.ly/plotly-2.35.2.min.js&quot;&gt;&lt;/script&gt;                &lt;div id=&quot;fc3a4448-e764-4b00-97c8-feb6891c5fe2&quot; class=&quot;plotly-graph-div&quot; style=&quot;height:525px; width:100%;&quot;&gt;&lt;/div&gt;            &lt;script type=&quot;text/javascript&quot;&gt;                                    window.PLOTLYENV=window.PLOTLYENV || {};                                    if (document.getElementById(&quot;fc3a4448-e764-4b00-97c8-feb6891c5fe2&quot;)) {                    Plotly.newPlot(                        &quot;fc3a4448-e764-4b00-97c8-feb6891c5fe2&quot;,                        [{&quot;hoverinfo&quot;:&quot;none&quot;,&quot;mode&quot;:&quot;lines&quot;,&quot;x&quot;:[0,1.0,null,0,0.30901699437494745,null,0,-0.8090169943749473,null,0,-0.8090169943749476,null,0,0.30901699437494723,null],&quot;y&quot;:[0,0.0,null,0,0.9510565162951535,null,0,0.5877852522924732,null,0,-0.587785252292473,null,0,-0.9510565162951536,null],&quot;type&quot;:&quot;scatter&quot;},{&quot;mode&quot;:&quot;markers+text&quot;,&quot;text&quot;:[&quot;B007WTAJTO&quot;,&quot;B00AAIPT76&quot;,&quot;B003ES5ZUU&quot;,&quot;B00DR0PDNE&quot;,&quot;B000QUUFRW&quot;,&quot;B005FYNSPK&quot;],&quot;textposition&quot;:&quot;bottom center&quot;,&quot;x&quot;:[0,1.0,0.30901699437494745,-0.8090169943749473,-0.8090169943749476,0.30901699437494723],&quot;y&quot;:[0,0.0,0.9510565162951535,0.5877852522924732,-0.587785252292473,-0.9510565162951536],&quot;type&quot;:&quot;scatter&quot;}],                        {&quot;template&quot;:{&quot;data&quot;:{&quot;histogram2dcontour&quot;:[{&quot;type&quot;:&quot;histogram2dcontour&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;choropleth&quot;:[{&quot;type&quot;:&quot;choropleth&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}],&quot;histogram2d&quot;:[{&quot;type&quot;:&quot;histogram2d&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;heatmap&quot;:[{&quot;type&quot;:&quot;heatmap&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;heatmapgl&quot;:[{&quot;type&quot;:&quot;heatmapgl&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;contourcarpet&quot;:[{&quot;type&quot;:&quot;contourcarpet&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}],&quot;contour&quot;:[{&quot;type&quot;:&quot;contour&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;surface&quot;:[{&quot;type&quot;:&quot;surface&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;mesh3d&quot;:[{&quot;type&quot;:&quot;mesh3d&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}],&quot;scatter&quot;:[{&quot;fillpattern&quot;:{&quot;fillmode&quot;:&quot;overlay&quot;,&quot;size&quot;:10,&quot;solidity&quot;:0.2},&quot;type&quot;:&quot;scatter&quot;}],&quot;parcoords&quot;:[{&quot;type&quot;:&quot;parcoords&quot;,&quot;line&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scatterpolargl&quot;:[{&quot;type&quot;:&quot;scatterpolargl&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;bar&quot;:[{&quot;error_x&quot;:{&quot;color&quot;:&quot;#2a3f5f&quot;},&quot;error_y&quot;:{&quot;color&quot;:&quot;#2a3f5f&quot;},&quot;marker&quot;:{&quot;line&quot;:{&quot;color&quot;:&quot;#E5ECF6&quot;,&quot;width&quot;:0.5},&quot;pattern&quot;:{&quot;fillmode&quot;:&quot;overlay&quot;,&quot;size&quot;:10,&quot;solidity&quot;:0.2}},&quot;type&quot;:&quot;bar&quot;}],&quot;scattergeo&quot;:[{&quot;type&quot;:&quot;scattergeo&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scatterpolar&quot;:[{&quot;type&quot;:&quot;scatterpolar&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;histogram&quot;:[{&quot;marker&quot;:{&quot;pattern&quot;:{&quot;fillmode&quot;:&quot;overlay&quot;,&quot;size&quot;:10,&quot;solidity&quot;:0.2}},&quot;type&quot;:&quot;histogram&quot;}],&quot;scattergl&quot;:[{&quot;type&quot;:&quot;scattergl&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scatter3d&quot;:[{&quot;type&quot;:&quot;scatter3d&quot;,&quot;line&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}},&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scattermapbox&quot;:[{&quot;type&quot;:&quot;scattermapbox&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scatterternary&quot;:[{&quot;type&quot;:&quot;scatterternary&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scattercarpet&quot;:[{&quot;type&quot;:&quot;scattercarpet&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;carpet&quot;:[{&quot;aaxis&quot;:{&quot;endlinecolor&quot;:&quot;#2a3f5f&quot;,&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;minorgridcolor&quot;:&quot;white&quot;,&quot;startlinecolor&quot;:&quot;#2a3f5f&quot;},&quot;baxis&quot;:{&quot;endlinecolor&quot;:&quot;#2a3f5f&quot;,&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;minorgridcolor&quot;:&quot;white&quot;,&quot;startlinecolor&quot;:&quot;#2a3f5f&quot;},&quot;type&quot;:&quot;carpet&quot;}],&quot;table&quot;:[{&quot;cells&quot;:{&quot;fill&quot;:{&quot;color&quot;:&quot;#EBF0F8&quot;},&quot;line&quot;:{&quot;color&quot;:&quot;white&quot;}},&quot;header&quot;:{&quot;fill&quot;:{&quot;color&quot;:&quot;#C8D4E3&quot;},&quot;line&quot;:{&quot;color&quot;:&quot;white&quot;}},&quot;type&quot;:&quot;table&quot;}],&quot;barpolar&quot;:[{&quot;marker&quot;:{&quot;line&quot;:{&quot;color&quot;:&quot;#E5ECF6&quot;,&quot;width&quot;:0.5},&quot;pattern&quot;:{&quot;fillmode&quot;:&quot;overlay&quot;,&quot;size&quot;:10,&quot;solidity&quot;:0.2}},&quot;type&quot;:&quot;barpolar&quot;}],&quot;pie&quot;:[{&quot;automargin&quot;:true,&quot;type&quot;:&quot;pie&quot;}]},&quot;layout&quot;:{&quot;autotypenumbers&quot;:&quot;strict&quot;,&quot;colorway&quot;:[&quot;#636efa&quot;,&quot;#EF553B&quot;,&quot;#00cc96&quot;,&quot;#ab63fa&quot;,&quot;#FFA15A&quot;,&quot;#19d3f3&quot;,&quot;#FF6692&quot;,&quot;#B6E880&quot;,&quot;#FF97FF&quot;,&quot;#FECB52&quot;],&quot;font&quot;:{&quot;color&quot;:&quot;#2a3f5f&quot;},&quot;hovermode&quot;:&quot;closest&quot;,&quot;hoverlabel&quot;:{&quot;align&quot;:&quot;left&quot;},&quot;paper_bgcolor&quot;:&quot;white&quot;,&quot;plot_bgcolor&quot;:&quot;#E5ECF6&quot;,&quot;polar&quot;:{&quot;bgcolor&quot;:&quot;#E5ECF6&quot;,&quot;angularaxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;},&quot;radialaxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;}},&quot;ternary&quot;:{&quot;bgcolor&quot;:&quot;#E5ECF6&quot;,&quot;aaxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;},&quot;baxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;},&quot;caxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;}},&quot;coloraxis&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}},&quot;colorscale&quot;:{&quot;sequential&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]],&quot;sequentialminus&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]],&quot;diverging&quot;:[[0,&quot;#8e0152&quot;],[0.1,&quot;#c51b7d&quot;],[0.2,&quot;#de77ae&quot;],[0.3,&quot;#f1b6da&quot;],[0.4,&quot;#fde0ef&quot;],[0.5,&quot;#f7f7f7&quot;],[0.6,&quot;#e6f5d0&quot;],[0.7,&quot;#b8e186&quot;],[0.8,&quot;#7fbc41&quot;],[0.9,&quot;#4d9221&quot;],[1,&quot;#276419&quot;]]},&quot;xaxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;,&quot;title&quot;:{&quot;standoff&quot;:15},&quot;zerolinecolor&quot;:&quot;white&quot;,&quot;automargin&quot;:true,&quot;zerolinewidth&quot;:2},&quot;yaxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;,&quot;title&quot;:{&quot;standoff&quot;:15},&quot;zerolinecolor&quot;:&quot;white&quot;,&quot;automargin&quot;:true,&quot;zerolinewidth&quot;:2},&quot;scene&quot;:{&quot;xaxis&quot;:{&quot;backgroundcolor&quot;:&quot;#E5ECF6&quot;,&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;showbackground&quot;:true,&quot;ticks&quot;:&quot;&quot;,&quot;zerolinecolor&quot;:&quot;white&quot;,&quot;gridwidth&quot;:2},&quot;yaxis&quot;:{&quot;backgroundcolor&quot;:&quot;#E5ECF6&quot;,&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;showbackground&quot;:true,&quot;ticks&quot;:&quot;&quot;,&quot;zerolinecolor&quot;:&quot;white&quot;,&quot;gridwidth&quot;:2},&quot;zaxis&quot;:{&quot;backgroundcolor&quot;:&quot;#E5ECF6&quot;,&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;showbackground&quot;:true,&quot;ticks&quot;:&quot;&quot;,&quot;zerolinecolor&quot;:&quot;white&quot;,&quot;gridwidth&quot;:2}},&quot;shapedefaults&quot;:{&quot;line&quot;:{&quot;color&quot;:&quot;#2a3f5f&quot;}},&quot;annotationdefaults&quot;:{&quot;arrowcolor&quot;:&quot;#2a3f5f&quot;,&quot;arrowhead&quot;:0,&quot;arrowwidth&quot;:1},&quot;geo&quot;:{&quot;bgcolor&quot;:&quot;white&quot;,&quot;landcolor&quot;:&quot;#E5ECF6&quot;,&quot;subunitcolor&quot;:&quot;white&quot;,&quot;showland&quot;:true,&quot;showlakes&quot;:true,&quot;lakecolor&quot;:&quot;white&quot;},&quot;title&quot;:{&quot;x&quot;:0.05},&quot;mapbox&quot;:{&quot;style&quot;:&quot;light&quot;}}},&quot;xaxis&quot;:{&quot;visible&quot;:false},&quot;yaxis&quot;:{&quot;visible&quot;:false},&quot;showlegend&quot;:false,&quot;title&quot;:{&quot;text&quot;:&quot;Star for product B007WTAJTO (Top-5)&quot;}},                        {&quot;responsive&quot;: true}                    ).then(function(){</code></pre>
+<p>var gd = document.getElementById(‘fc3a4448-e764-4b00-97c8-feb6891c5fe2’); var x = new MutationObserver(function (mutations, observer) {{ var display = window.getComputedStyle(gd).display; if (!display || display === ‘none’) {{ console.log([gd, ‘removed!’]); Plotly.purge(gd); observer.disconnect(); }} }});</p>
+<p>// Listen for the removal of the full notebook cells var notebookContainer = gd.closest(‘#notebook-container’); if (notebookContainer) {{ x.observe(notebookContainer, {childList: true}); }}</p>
+<p>// Listen for the clearing of the current output cell var outputEl = gd.closest(‘.output’); if (outputEl) {{ x.observe(outputEl, {childList: true}); }}</p>
+<pre><code>                    })                };                            &lt;/script&gt;        &lt;/div&gt;</code></pre>
+</body>
+</html>
+<h2 id="interactive-controls-in-jupyter">8. Interactive Controls (in Jupyter)</h2>
+<p>This cell sets up interactive widgets (Dropdown and IntSlider) to allow users to select a product and the number of neighbors to display. It uses the <code>run_interactive</code> function to show the top neighbors as a table and a star network visualization when the widget values change. If widgets are not available, it falls back to a static display of the default product’s neighbors.</p>
+<div class="sourceCode" id="cb28"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true"></a><span class="co"># 8. Interactive controls (in Jupyter)</span></span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true"></a><span class="kw">def</span> run_interactive(center_id, n_neighbors):</span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true"></a>    display(pd.DataFrame(top_n_neighbors(G_items, center_id, n_neighbors), columns<span class="op">=</span>[<span class="st">&#39;neighbor_product&#39;</span>,<span class="st">&#39;shared_users (weight)&#39;</span>]))</span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true"></a>    <span class="cf">if</span> PLOTLY_AVAILABLE:</span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true"></a>        plot_star_plotly(G_items, center_id, n_neighbors)</span>
+<span id="cb28-6"><a href="#cb28-6" aria-hidden="true"></a>    <span class="cf">else</span>:</span>
+<span id="cb28-7"><a href="#cb28-7" aria-hidden="true"></a>        plot_star_matplotlib(G_items, center_id, n_neighbors)</span>
+<span id="cb28-8"><a href="#cb28-8" aria-hidden="true"></a></span>
+<span id="cb28-9"><a href="#cb28-9" aria-hidden="true"></a><span class="cf">if</span> WIDGETS_AVAILABLE:</span>
+<span id="cb28-10"><a href="#cb28-10" aria-hidden="true"></a>    item_options <span class="op">=</span> <span class="bu">sorted</span>(<span class="bu">list</span>(G_items.nodes()))[:<span class="dv">5000</span>]  <span class="co"># safety cap for dropdown size</span></span>
+<span id="cb28-11"><a href="#cb28-11" aria-hidden="true"></a>    <span class="cf">if</span> default_item <span class="kw">not</span> <span class="kw">in</span> item_options:</span>
+<span id="cb28-12"><a href="#cb28-12" aria-hidden="true"></a>        item_options <span class="op">=</span> [default_item] <span class="op">+</span> item_options</span>
+<span id="cb28-13"><a href="#cb28-13" aria-hidden="true"></a>    w_item <span class="op">=</span> widgets.Dropdown(options<span class="op">=</span>item_options, value<span class="op">=</span>default_item, description<span class="op">=</span><span class="st">&#39;Product:&#39;</span>)</span>
+<span id="cb28-14"><a href="#cb28-14" aria-hidden="true"></a>    w_n <span class="op">=</span> widgets.IntSlider(value<span class="op">=</span><span class="dv">5</span>, <span class="bu">min</span><span class="op">=</span><span class="dv">1</span>, <span class="bu">max</span><span class="op">=</span><span class="dv">20</span>, step<span class="op">=</span><span class="dv">1</span>, description<span class="op">=</span><span class="st">&#39;Top-N:&#39;</span>)</span>
+<span id="cb28-15"><a href="#cb28-15" aria-hidden="true"></a>    ui <span class="op">=</span> widgets.VBox([w_item, w_n])</span>
+<span id="cb28-16"><a href="#cb28-16" aria-hidden="true"></a>    out <span class="op">=</span> widgets.Output()</span>
+<span id="cb28-17"><a href="#cb28-17" aria-hidden="true"></a></span>
+<span id="cb28-18"><a href="#cb28-18" aria-hidden="true"></a>    <span class="kw">def</span> on_change(change):</span>
+<span id="cb28-19"><a href="#cb28-19" aria-hidden="true"></a>        <span class="cf">with</span> out:</span>
+<span id="cb28-20"><a href="#cb28-20" aria-hidden="true"></a>            clear_output(wait<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb28-21"><a href="#cb28-21" aria-hidden="true"></a>            run_interactive(w_item.value, w_n.value)</span>
+<span id="cb28-22"><a href="#cb28-22" aria-hidden="true"></a></span>
+<span id="cb28-23"><a href="#cb28-23" aria-hidden="true"></a>    w_item.observe(on_change, names<span class="op">=</span><span class="st">&#39;value&#39;</span>)</span>
+<span id="cb28-24"><a href="#cb28-24" aria-hidden="true"></a>    w_n.observe(on_change, names<span class="op">=</span><span class="st">&#39;value&#39;</span>)</span>
+<span id="cb28-25"><a href="#cb28-25" aria-hidden="true"></a>    display(ui, out)</span>
+<span id="cb28-26"><a href="#cb28-26" aria-hidden="true"></a>    <span class="co"># first draw</span></span>
+<span id="cb28-27"><a href="#cb28-27" aria-hidden="true"></a>    on_change(<span class="va">None</span>)</span>
+<span id="cb28-28"><a href="#cb28-28" aria-hidden="true"></a><span class="cf">else</span>:</span>
+<span id="cb28-29"><a href="#cb28-29" aria-hidden="true"></a>    <span class="co"># Static fallback</span></span>
+<span id="cb28-30"><a href="#cb28-30" aria-hidden="true"></a>    run_interactive(default_item, <span class="dv">5</span>)</span></code></pre></div>
+<pre><code>VBox(children=(Dropdown(description=&#39;Product:&#39;, options=(&#39;B007WTAJTO&#39;, &#39;0594451647&#39;, &#39;0594481813&#39;, &#39;0594481902…
+
+
+
+Output()</code></pre>
+<h2 id="optional-explore-global-product-network-static">9. Optional: Explore Global Product Network (Static)</h2>
+<p>This cell defines a function <code>subgraph_by_weight</code> to create a subgraph containing only edges within a specified weight range. It then applies this function to the product graph and visualizes the resulting trimmed network using a spring layout. This provides a static view of the network structure for products with a certain level of shared positive ratings.</p>
+<div class="sourceCode" id="cb30"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true"></a><span class="co"># 9. Optional: explore the global product network with weight range filters (static)</span></span>
+<span id="cb30-2"><a href="#cb30-2" aria-hidden="true"></a><span class="kw">def</span> subgraph_by_weight(G, wmin<span class="op">=</span><span class="dv">5</span>, wmax<span class="op">=</span><span class="va">None</span>):</span>
+<span id="cb30-3"><a href="#cb30-3" aria-hidden="true"></a>    edges <span class="op">=</span> []</span>
+<span id="cb30-4"><a href="#cb30-4" aria-hidden="true"></a>    <span class="cf">for</span> u, v, d <span class="kw">in</span> G.edges(data<span class="op">=</span><span class="va">True</span>):</span>
+<span id="cb30-5"><a href="#cb30-5" aria-hidden="true"></a>        w <span class="op">=</span> d.get(<span class="st">&#39;weight&#39;</span>,<span class="dv">1</span>)</span>
+<span id="cb30-6"><a href="#cb30-6" aria-hidden="true"></a>        <span class="cf">if</span> w <span class="op">&gt;=</span> wmin <span class="kw">and</span> (wmax <span class="kw">is</span> <span class="va">None</span> <span class="kw">or</span> w <span class="op">&lt;=</span> wmax):</span>
+<span id="cb30-7"><a href="#cb30-7" aria-hidden="true"></a>            edges.append((u,v))</span>
+<span id="cb30-8"><a href="#cb30-8" aria-hidden="true"></a>    H <span class="op">=</span> G.edge_subgraph(edges).copy()</span>
+<span id="cb30-9"><a href="#cb30-9" aria-hidden="true"></a>    <span class="cf">return</span> H</span>
+<span id="cb30-10"><a href="#cb30-10" aria-hidden="true"></a></span>
+<span id="cb30-11"><a href="#cb30-11" aria-hidden="true"></a>H <span class="op">=</span> subgraph_by_weight(G_items, wmin<span class="op">=</span><span class="dv">10</span>, wmax<span class="op">=</span><span class="dv">50</span>)</span>
+<span id="cb30-12"><a href="#cb30-12" aria-hidden="true"></a><span class="bu">print</span>(<span class="ss">f&quot;Subgraph info -&gt; Nodes: </span><span class="sc">{H.</span>number_of_nodes()<span class="sc">}</span><span class="ss">, Edges: </span><span class="sc">{H.</span>number_of_edges()<span class="sc">}</span><span class="ss">, &quot;</span></span>
+<span id="cb30-13"><a href="#cb30-13" aria-hidden="true"></a>      <span class="ss">f&quot;Is directed: </span><span class="sc">{H.</span>is_directed()<span class="sc">}</span><span class="ss">, Density: </span><span class="sc">{nx.</span>density(H)<span class="sc">:.4f}</span><span class="ss">&quot;</span>)</span>
+<span id="cb30-14"><a href="#cb30-14" aria-hidden="true"></a>pos <span class="op">=</span> nx.spring_layout(H, k<span class="op">=</span><span class="fl">0.3</span>, seed<span class="op">=</span><span class="dv">42</span>)</span>
+<span id="cb30-15"><a href="#cb30-15" aria-hidden="true"></a>plt.figure(figsize<span class="op">=</span>(<span class="dv">7</span>,<span class="dv">6</span>))</span>
+<span id="cb30-16"><a href="#cb30-16" aria-hidden="true"></a>nx.draw_networkx(H, pos, with_labels<span class="op">=</span><span class="va">False</span>, node_size<span class="op">=</span><span class="dv">50</span>, edge_color<span class="op">=</span><span class="st">&#39;#aaaaaa&#39;</span>)</span>
+<span id="cb30-17"><a href="#cb30-17" aria-hidden="true"></a>plt.title(<span class="st">&#39;Trimmed product network (10 &lt;= weight &lt;= 50)&#39;</span>)</span>
+<span id="cb30-18"><a href="#cb30-18" aria-hidden="true"></a>plt.axis(<span class="st">&#39;off&#39;</span>)<span class="op">;</span> plt.show()</span></code></pre></div>
+<pre><code>Subgraph info -&gt; Nodes: 2341, Edges: 6493, Is directed: False, Density: 0.0024</code></pre>
+<figure>
+<img src="https://theonlineconverter.com/uploads/AI_Recommender_Bipartite_Projection_1761885085_files/AI_Recommender_Bipartite_Projection_1761885085_17_1.png" alt="" /><figcaption>png</figcaption>
+</figure>
+<h2 id="visualize-top-n-neighbors-of-a-manually-entered-product">Visualize Top-N Neighbors of a Manually Entered Product</h2>
+<p>This cell demonstrates how to manually specify a <code>PRODUCT_ID</code> and <code>TOP_N</code> to retrieve and visualize the top N neighbors for that specific product. It first retrieves the neighbors using the <code>top_n_neighbors</code> function, displays them in a DataFrame, and then generates the star network visualization using either Plotly or Matplotlib.</p>
+<div class="sourceCode" id="cb32"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true"></a><span class="co"># Visualizar Top-N vecinos de un producto ingresado manualmente</span></span>
+<span id="cb32-2"><a href="#cb32-2" aria-hidden="true"></a></span>
+<span id="cb32-3"><a href="#cb32-3" aria-hidden="true"></a><span class="co"># --- Parámetros editables ---</span></span>
+<span id="cb32-4"><a href="#cb32-4" aria-hidden="true"></a>PRODUCT_ID <span class="op">=</span> <span class="st">&quot;B005Y586QQ&quot;</span></span>
+<span id="cb32-5"><a href="#cb32-5" aria-hidden="true"></a>TOP_N <span class="op">=</span> <span class="dv">10</span></span>
+<span id="cb32-6"><a href="#cb32-6" aria-hidden="true"></a></span>
+<span id="cb32-7"><a href="#cb32-7" aria-hidden="true"></a><span class="co"># Obtener vecinos</span></span>
+<span id="cb32-8"><a href="#cb32-8" aria-hidden="true"></a>neighbors <span class="op">=</span> top_n_neighbors(G_items, PRODUCT_ID, n<span class="op">=</span>TOP_N)</span>
+<span id="cb32-9"><a href="#cb32-9" aria-hidden="true"></a></span>
+<span id="cb32-10"><a href="#cb32-10" aria-hidden="true"></a><span class="cf">if</span> <span class="kw">not</span> neighbors:</span>
+<span id="cb32-11"><a href="#cb32-11" aria-hidden="true"></a>    <span class="bu">print</span>(<span class="ss">f&quot;No se encontraron vecinos para el producto </span><span class="sc">{</span>PRODUCT_ID<span class="sc">}</span><span class="ss">. Verifica el ID o el filtro de red.&quot;</span>)</span>
+<span id="cb32-12"><a href="#cb32-12" aria-hidden="true"></a><span class="cf">else</span>:</span>
+<span id="cb32-13"><a href="#cb32-13" aria-hidden="true"></a>    <span class="co"># Mostrar lista de vecinos</span></span>
+<span id="cb32-14"><a href="#cb32-14" aria-hidden="true"></a>    df_neighbors <span class="op">=</span> pd.DataFrame(neighbors, columns<span class="op">=</span>[<span class="st">&quot;Producto vecino&quot;</span>, <span class="st">&quot;Usuarios compartidos (peso)&quot;</span>])</span>
+<span id="cb32-15"><a href="#cb32-15" aria-hidden="true"></a>    display(df_neighbors)</span>
+<span id="cb32-16"><a href="#cb32-16" aria-hidden="true"></a></span>
+<span id="cb32-17"><a href="#cb32-17" aria-hidden="true"></a>    <span class="co"># Visualización</span></span>
+<span id="cb32-18"><a href="#cb32-18" aria-hidden="true"></a>    <span class="cf">if</span> PLOTLY_AVAILABLE:</span>
+<span id="cb32-19"><a href="#cb32-19" aria-hidden="true"></a>        plot_star_plotly(G_items, PRODUCT_ID, n<span class="op">=</span>TOP_N)</span>
+<span id="cb32-20"><a href="#cb32-20" aria-hidden="true"></a>    <span class="cf">else</span>:</span>
+<span id="cb32-21"><a href="#cb32-21" aria-hidden="true"></a>        plot_star_matplotlib(G_items, PRODUCT_ID, n<span class="op">=</span>TOP_N)</span></code></pre></div>
+<div id="df-7117bbbf-e641-4626-87fa-809cb53230bf" class="colab-df-container">
+<pre><code>&lt;div&gt;</code></pre>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+<thead>
+<tr style="text-align: right;">
+<th>
+</th>
+<th>
+Producto vecino
+</th>
+<th>
+Usuarios compartidos (peso)
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<th>
+0
+</th>
+<td>
+B007P4VOWC
+</td>
+<td>
+7
+</td>
+</tr>
+<tr>
+<th>
+1
+</th>
+<td>
+B005N130Y4
+</td>
+<td>
+5
+</td>
+</tr>
+<tr>
+<th>
+2
+</th>
+<td>
+B007TYUTY2
+</td>
+<td>
+4
+</td>
+</tr>
+<tr>
+<th>
+3
+</th>
+<td>
+B000WYVBR0
+</td>
+<td>
+3
+</td>
+</tr>
+<tr>
+<th>
+4
+</th>
+<td>
+B003ELYQGG
+</td>
+<td>
+3
+</td>
+</tr>
+<tr>
+<th>
+5
+</th>
+<td>
+B007M506WS
+</td>
+<td>
+3
+</td>
+</tr>
+<tr>
+<th>
+6
+</th>
+<td>
+B008MPVUK4
+</td>
+<td>
+3
+</td>
+</tr>
+<tr>
+<th>
+7
+</th>
+<td>
+B00DR0PDNE
+</td>
+<td>
+3
+</td>
+</tr>
+<tr>
+<th>
+8
+</th>
+<td>
+B000Q8UAWY
+</td>
+<td>
+2
+</td>
+</tr>
+<tr>
+<th>
+9
+</th>
+<td>
+B0019EHU8G
+</td>
+<td>
+2
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<pre><code>&lt;div class=&quot;colab-df-buttons&quot;&gt;</code></pre>
+<div class="colab-df-container">
+<pre><code>&lt;button class=&quot;colab-df-convert&quot; onclick=&quot;convertToInteractive(&#39;df-7117bbbf-e641-4626-87fa-809cb53230bf&#39;)&quot;
+        title=&quot;Convert this dataframe to an interactive table.&quot;
+        style=&quot;display:none;&quot;&gt;</code></pre>
+<p><svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960"> <path d="M120-120v-720h720v720H120Zm60-500h600v-160H180v160Zm220 220h160v-160H400v160Zm0 220h160v-160H400v160ZM180-400h160v-160H180v160Zm440 0h160v-160H620v160ZM180-180h160v-160H180v160Zm440 0h160v-160H620v160Z"/> </svg> </button></p>
+<style>
+    .colab-df-container {
+      display:flex;
+      gap: 12px;
+    }
+
+    .colab-df-convert {
+      background-color: #E8F0FE;
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      display: none;
+      fill: #1967D2;
+      height: 32px;
+      padding: 0 0 0 0;
+      width: 32px;
+    }
+
+    .colab-df-convert:hover {
+      background-color: #E2EBFA;
+      box-shadow: 0px 1px 2px rgba(60, 64, 67, 0.3), 0px 1px 3px 1px rgba(60, 64, 67, 0.15);
+      fill: #174EA6;
+    }
+
+    .colab-df-buttons div {
+      margin-bottom: 4px;
+    }
+
+    [theme=dark] .colab-df-convert {
+      background-color: #3B4455;
+      fill: #D2E3FC;
+    }
+
+    [theme=dark] .colab-df-convert:hover {
+      background-color: #434B5C;
+      box-shadow: 0px 1px 3px 1px rgba(0, 0, 0, 0.15);
+      filter: drop-shadow(0px 1px 2px rgba(0, 0, 0, 0.3));
+      fill: #FFFFFF;
+    }
+  </style>
+<pre><code>&lt;script&gt;
+  const buttonEl =
+    document.querySelector(&#39;#df-7117bbbf-e641-4626-87fa-809cb53230bf button.colab-df-convert&#39;);
+  buttonEl.style.display =
+    google.colab.kernel.accessAllowed ? &#39;block&#39; : &#39;none&#39;;
+
+  async function convertToInteractive(key) {
+    const element = document.querySelector(&#39;#df-7117bbbf-e641-4626-87fa-809cb53230bf&#39;);
+    const dataTable =
+      await google.colab.kernel.invokeFunction(&#39;convertToInteractive&#39;,
+                                                [key], {});
+    if (!dataTable) return;
+
+    const docLinkHtml = &#39;Like what you see? Visit the &#39; +
+      &#39;&lt;a target=&quot;_blank&quot; href=https://colab.research.google.com/notebooks/data_table.ipynb&gt;data table notebook&lt;/a&gt;&#39;
+      + &#39; to learn more about interactive tables.&#39;;
+    element.innerHTML = &#39;&#39;;
+    dataTable[&#39;output_type&#39;] = &#39;display_data&#39;;
+    await google.colab.output.renderOutput(dataTable, element);
+    const docLink = document.createElement(&#39;div&#39;);
+    docLink.innerHTML = docLinkHtml;
+    element.appendChild(docLink);
+  }
+&lt;/script&gt;</code></pre>
+</div>
+<pre><code>&lt;div id=&quot;df-498ec121-1db8-4602-ad3d-b5219dc3ee7e&quot;&gt;
+  &lt;button class=&quot;colab-df-quickchart&quot; onclick=&quot;quickchart(&#39;df-498ec121-1db8-4602-ad3d-b5219dc3ee7e&#39;)&quot;
+            title=&quot;Suggest charts&quot;
+            style=&quot;display:none;&quot;&gt;</code></pre>
+<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 0 24 24" width="24px">
+<g> <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/> </g>
+</svg>
+<pre><code>  &lt;/button&gt;</code></pre>
+<style>
+  .colab-df-quickchart {
+      --bg-color: #E8F0FE;
+      --fill-color: #1967D2;
+      --hover-bg-color: #E2EBFA;
+      --hover-fill-color: #174EA6;
+      --disabled-fill-color: #AAA;
+      --disabled-bg-color: #DDD;
+  }
+
+  [theme=dark] .colab-df-quickchart {
+      --bg-color: #3B4455;
+      --fill-color: #D2E3FC;
+      --hover-bg-color: #434B5C;
+      --hover-fill-color: #FFFFFF;
+      --disabled-bg-color: #3B4455;
+      --disabled-fill-color: #666;
+  }
+
+  .colab-df-quickchart {
+    background-color: var(--bg-color);
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: none;
+    fill: var(--fill-color);
+    height: 32px;
+    padding: 0;
+    width: 32px;
+  }
+
+  .colab-df-quickchart:hover {
+    background-color: var(--hover-bg-color);
+    box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+    fill: var(--button-hover-fill-color);
+  }
+
+  .colab-df-quickchart-complete:disabled,
+  .colab-df-quickchart-complete:disabled:hover {
+    background-color: var(--disabled-bg-color);
+    fill: var(--disabled-fill-color);
+    box-shadow: none;
+  }
+
+  .colab-df-spinner {
+    border: 2px solid var(--fill-color);
+    border-color: transparent;
+    border-bottom-color: var(--fill-color);
+    animation:
+      spin 1s steps(1) infinite;
+  }
+
+  @keyframes spin {
+    0% {
+      border-color: transparent;
+      border-bottom-color: var(--fill-color);
+      border-left-color: var(--fill-color);
+    }
+    20% {
+      border-color: transparent;
+      border-left-color: var(--fill-color);
+      border-top-color: var(--fill-color);
+    }
+    30% {
+      border-color: transparent;
+      border-left-color: var(--fill-color);
+      border-top-color: var(--fill-color);
+      border-right-color: var(--fill-color);
+    }
+    40% {
+      border-color: transparent;
+      border-right-color: var(--fill-color);
+      border-top-color: var(--fill-color);
+    }
+    60% {
+      border-color: transparent;
+      border-right-color: var(--fill-color);
+    }
+    80% {
+      border-color: transparent;
+      border-right-color: var(--fill-color);
+      border-bottom-color: var(--fill-color);
+    }
+    90% {
+      border-color: transparent;
+      border-bottom-color: var(--fill-color);
+    }
+  }
+</style>
+<pre><code>  &lt;script&gt;
+    async function quickchart(key) {
+      const quickchartButtonEl =
+        document.querySelector(&#39;#&#39; + key + &#39; button&#39;);
+      quickchartButtonEl.disabled = true;  // To prevent multiple clicks.
+      quickchartButtonEl.classList.add(&#39;colab-df-spinner&#39;);
+      try {
+        const charts = await google.colab.kernel.invokeFunction(
+            &#39;suggestCharts&#39;, [key], {});
+      } catch (error) {
+        console.error(&#39;Error during call to suggestCharts:&#39;, error);
+      }
+      quickchartButtonEl.classList.remove(&#39;colab-df-spinner&#39;);
+      quickchartButtonEl.classList.add(&#39;colab-df-quickchart-complete&#39;);
+    }
+    (() =&gt; {
+      let quickchartButtonEl =
+        document.querySelector(&#39;#df-498ec121-1db8-4602-ad3d-b5219dc3ee7e button&#39;);
+      quickchartButtonEl.style.display =
+        google.colab.kernel.accessAllowed ? &#39;block&#39; : &#39;none&#39;;
+    })();
+  &lt;/script&gt;
+&lt;/div&gt;</code></pre>
+<div id="id_f4dfc5a8-f931-4100-a763-34ff65293890">
+<pre><code>&lt;style&gt;
+  .colab-df-generate {
+    background-color: #E8F0FE;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: none;
+    fill: #1967D2;
+    height: 32px;
+    padding: 0 0 0 0;
+    width: 32px;
+  }
+
+  .colab-df-generate:hover {
+    background-color: #E2EBFA;
+    box-shadow: 0px 1px 2px rgba(60, 64, 67, 0.3), 0px 1px 3px 1px rgba(60, 64, 67, 0.15);
+    fill: #174EA6;
+  }
+
+  [theme=dark] .colab-df-generate {
+    background-color: #3B4455;
+    fill: #D2E3FC;
+  }
+
+  [theme=dark] .colab-df-generate:hover {
+    background-color: #434B5C;
+    box-shadow: 0px 1px 3px 1px rgba(0, 0, 0, 0.15);
+    filter: drop-shadow(0px 1px 2px rgba(0, 0, 0, 0.3));
+    fill: #FFFFFF;
+  }
+&lt;/style&gt;
+&lt;button class=&quot;colab-df-generate&quot; onclick=&quot;generateWithVariable(&#39;df_neighbors&#39;)&quot;
+        title=&quot;Generate code using this dataframe.&quot;
+        style=&quot;display:none;&quot;&gt;</code></pre>
+<svg xmlns="http://www.w3.org/2000/svg" height="24px"viewBox="0 0 24 24"
+       width="24px"> <path d="M7,19H8.4L18.45,9,17,7.55,7,17.6ZM5,21V16.75L18.45,3.32a2,2,0,0,1,2.83,0l1.4,1.43a1.91,1.91,0,0,1,.58,1.4,1.91,1.91,0,0,1-.58,1.4L9.25,21ZM18.45,9,17,7.55Zm-12,3A5.31,5.31,0,0,0,4.9,8.1,5.31,5.31,0,0,0,1,6.5,5.31,5.31,0,0,0,4.9,4.9,5.31,5.31,0,0,0,6.5,1,5.31,5.31,0,0,0,8.1,4.9,5.31,5.31,0,0,0,12,6.5,5.46,5.46,0,0,0,6.5,12Z"/> </svg> </button>
+<script>
+      (() => {
+      const buttonEl =
+        document.querySelector('#id_f4dfc5a8-f931-4100-a763-34ff65293890 button.colab-df-generate');
+      buttonEl.style.display =
+        google.colab.kernel.accessAllowed ? 'block' : 'none';
+
+      buttonEl.onclick = () => {
+        google.colab.notebook.generateWithVariable('df_neighbors');
+      }
+      })();
+    </script>
+</div>
+<pre><code>&lt;/div&gt;</code></pre>
+</div>
+<html>
+<head>
+<meta charset="utf-8" />
+</head>
+<body>
+<div>
+<pre><code>        &lt;script src=&quot;https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.5/MathJax.js?config=TeX-AMS-MML_SVG&quot;&gt;&lt;/script&gt;&lt;script type=&quot;text/javascript&quot;&gt;if (window.MathJax &amp;&amp; window.MathJax.Hub &amp;&amp; window.MathJax.Hub.Config) {window.MathJax.Hub.Config({SVG: {font: &quot;STIX-Web&quot;}});}&lt;/script&gt;                &lt;script type=&quot;text/javascript&quot;&gt;window.PlotlyConfig = {MathJaxConfig: &#39;local&#39;};&lt;/script&gt;
+    &lt;script charset=&quot;utf-8&quot; src=&quot;https://cdn.plot.ly/plotly-2.35.2.min.js&quot;&gt;&lt;/script&gt;                &lt;div id=&quot;cc593f5d-70c7-44c0-9b0d-5cfd6c78d96c&quot; class=&quot;plotly-graph-div&quot; style=&quot;height:525px; width:100%;&quot;&gt;&lt;/div&gt;            &lt;script type=&quot;text/javascript&quot;&gt;                                    window.PLOTLYENV=window.PLOTLYENV || {};                                    if (document.getElementById(&quot;cc593f5d-70c7-44c0-9b0d-5cfd6c78d96c&quot;)) {                    Plotly.newPlot(                        &quot;cc593f5d-70c7-44c0-9b0d-5cfd6c78d96c&quot;,                        [{&quot;hoverinfo&quot;:&quot;none&quot;,&quot;mode&quot;:&quot;lines&quot;,&quot;x&quot;:[0,1.0,null,0,0.8090169943749475,null,0,0.30901699437494745,null,0,-0.30901699437494734,null,0,-0.8090169943749473,null,0,-1.0,null,0,-0.8090169943749476,null,0,-0.30901699437494756,null,0,0.30901699437494723,null,0,0.8090169943749473,null],&quot;y&quot;:[0,0.0,null,0,0.5877852522924731,null,0,0.9510565162951535,null,0,0.9510565162951536,null,0,0.5877852522924732,null,0,1.2246467991473532e-16,null,0,-0.587785252292473,null,0,-0.9510565162951535,null,0,-0.9510565162951536,null,0,-0.5877852522924734,null],&quot;type&quot;:&quot;scatter&quot;},{&quot;mode&quot;:&quot;markers+text&quot;,&quot;text&quot;:[&quot;B005Y586QQ&quot;,&quot;B007P4VOWC&quot;,&quot;B005N130Y4&quot;,&quot;B007TYUTY2&quot;,&quot;B000WYVBR0&quot;,&quot;B003ELYQGG&quot;,&quot;B007M506WS&quot;,&quot;B008MPVUK4&quot;,&quot;B00DR0PDNE&quot;,&quot;B000Q8UAWY&quot;,&quot;B0019EHU8G&quot;],&quot;textposition&quot;:&quot;bottom center&quot;,&quot;x&quot;:[0,1.0,0.8090169943749475,0.30901699437494745,-0.30901699437494734,-0.8090169943749473,-1.0,-0.8090169943749476,-0.30901699437494756,0.30901699437494723,0.8090169943749473],&quot;y&quot;:[0,0.0,0.5877852522924731,0.9510565162951535,0.9510565162951536,0.5877852522924732,1.2246467991473532e-16,-0.587785252292473,-0.9510565162951535,-0.9510565162951536,-0.5877852522924734],&quot;type&quot;:&quot;scatter&quot;}],                        {&quot;template&quot;:{&quot;data&quot;:{&quot;histogram2dcontour&quot;:[{&quot;type&quot;:&quot;histogram2dcontour&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;choropleth&quot;:[{&quot;type&quot;:&quot;choropleth&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}],&quot;histogram2d&quot;:[{&quot;type&quot;:&quot;histogram2d&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;heatmap&quot;:[{&quot;type&quot;:&quot;heatmap&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;heatmapgl&quot;:[{&quot;type&quot;:&quot;heatmapgl&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;contourcarpet&quot;:[{&quot;type&quot;:&quot;contourcarpet&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}],&quot;contour&quot;:[{&quot;type&quot;:&quot;contour&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;surface&quot;:[{&quot;type&quot;:&quot;surface&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;},&quot;colorscale&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]]}],&quot;mesh3d&quot;:[{&quot;type&quot;:&quot;mesh3d&quot;,&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}],&quot;scatter&quot;:[{&quot;fillpattern&quot;:{&quot;fillmode&quot;:&quot;overlay&quot;,&quot;size&quot;:10,&quot;solidity&quot;:0.2},&quot;type&quot;:&quot;scatter&quot;}],&quot;parcoords&quot;:[{&quot;type&quot;:&quot;parcoords&quot;,&quot;line&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scatterpolargl&quot;:[{&quot;type&quot;:&quot;scatterpolargl&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;bar&quot;:[{&quot;error_x&quot;:{&quot;color&quot;:&quot;#2a3f5f&quot;},&quot;error_y&quot;:{&quot;color&quot;:&quot;#2a3f5f&quot;},&quot;marker&quot;:{&quot;line&quot;:{&quot;color&quot;:&quot;#E5ECF6&quot;,&quot;width&quot;:0.5},&quot;pattern&quot;:{&quot;fillmode&quot;:&quot;overlay&quot;,&quot;size&quot;:10,&quot;solidity&quot;:0.2}},&quot;type&quot;:&quot;bar&quot;}],&quot;scattergeo&quot;:[{&quot;type&quot;:&quot;scattergeo&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scatterpolar&quot;:[{&quot;type&quot;:&quot;scatterpolar&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;histogram&quot;:[{&quot;marker&quot;:{&quot;pattern&quot;:{&quot;fillmode&quot;:&quot;overlay&quot;,&quot;size&quot;:10,&quot;solidity&quot;:0.2}},&quot;type&quot;:&quot;histogram&quot;}],&quot;scattergl&quot;:[{&quot;type&quot;:&quot;scattergl&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scatter3d&quot;:[{&quot;type&quot;:&quot;scatter3d&quot;,&quot;line&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}},&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scattermapbox&quot;:[{&quot;type&quot;:&quot;scattermapbox&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scatterternary&quot;:[{&quot;type&quot;:&quot;scatterternary&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;scattercarpet&quot;:[{&quot;type&quot;:&quot;scattercarpet&quot;,&quot;marker&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}}}],&quot;carpet&quot;:[{&quot;aaxis&quot;:{&quot;endlinecolor&quot;:&quot;#2a3f5f&quot;,&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;minorgridcolor&quot;:&quot;white&quot;,&quot;startlinecolor&quot;:&quot;#2a3f5f&quot;},&quot;baxis&quot;:{&quot;endlinecolor&quot;:&quot;#2a3f5f&quot;,&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;minorgridcolor&quot;:&quot;white&quot;,&quot;startlinecolor&quot;:&quot;#2a3f5f&quot;},&quot;type&quot;:&quot;carpet&quot;}],&quot;table&quot;:[{&quot;cells&quot;:{&quot;fill&quot;:{&quot;color&quot;:&quot;#EBF0F8&quot;},&quot;line&quot;:{&quot;color&quot;:&quot;white&quot;}},&quot;header&quot;:{&quot;fill&quot;:{&quot;color&quot;:&quot;#C8D4E3&quot;},&quot;line&quot;:{&quot;color&quot;:&quot;white&quot;}},&quot;type&quot;:&quot;table&quot;}],&quot;barpolar&quot;:[{&quot;marker&quot;:{&quot;line&quot;:{&quot;color&quot;:&quot;#E5ECF6&quot;,&quot;width&quot;:0.5},&quot;pattern&quot;:{&quot;fillmode&quot;:&quot;overlay&quot;,&quot;size&quot;:10,&quot;solidity&quot;:0.2}},&quot;type&quot;:&quot;barpolar&quot;}],&quot;pie&quot;:[{&quot;automargin&quot;:true,&quot;type&quot;:&quot;pie&quot;}]},&quot;layout&quot;:{&quot;autotypenumbers&quot;:&quot;strict&quot;,&quot;colorway&quot;:[&quot;#636efa&quot;,&quot;#EF553B&quot;,&quot;#00cc96&quot;,&quot;#ab63fa&quot;,&quot;#FFA15A&quot;,&quot;#19d3f3&quot;,&quot;#FF6692&quot;,&quot;#B6E880&quot;,&quot;#FF97FF&quot;,&quot;#FECB52&quot;],&quot;font&quot;:{&quot;color&quot;:&quot;#2a3f5f&quot;},&quot;hovermode&quot;:&quot;closest&quot;,&quot;hoverlabel&quot;:{&quot;align&quot;:&quot;left&quot;},&quot;paper_bgcolor&quot;:&quot;white&quot;,&quot;plot_bgcolor&quot;:&quot;#E5ECF6&quot;,&quot;polar&quot;:{&quot;bgcolor&quot;:&quot;#E5ECF6&quot;,&quot;angularaxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;},&quot;radialaxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;}},&quot;ternary&quot;:{&quot;bgcolor&quot;:&quot;#E5ECF6&quot;,&quot;aaxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;},&quot;baxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;},&quot;caxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;}},&quot;coloraxis&quot;:{&quot;colorbar&quot;:{&quot;outlinewidth&quot;:0,&quot;ticks&quot;:&quot;&quot;}},&quot;colorscale&quot;:{&quot;sequential&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]],&quot;sequentialminus&quot;:[[0.0,&quot;#0d0887&quot;],[0.1111111111111111,&quot;#46039f&quot;],[0.2222222222222222,&quot;#7201a8&quot;],[0.3333333333333333,&quot;#9c179e&quot;],[0.4444444444444444,&quot;#bd3786&quot;],[0.5555555555555556,&quot;#d8576b&quot;],[0.6666666666666666,&quot;#ed7953&quot;],[0.7777777777777778,&quot;#fb9f3a&quot;],[0.8888888888888888,&quot;#fdca26&quot;],[1.0,&quot;#f0f921&quot;]],&quot;diverging&quot;:[[0,&quot;#8e0152&quot;],[0.1,&quot;#c51b7d&quot;],[0.2,&quot;#de77ae&quot;],[0.3,&quot;#f1b6da&quot;],[0.4,&quot;#fde0ef&quot;],[0.5,&quot;#f7f7f7&quot;],[0.6,&quot;#e6f5d0&quot;],[0.7,&quot;#b8e186&quot;],[0.8,&quot;#7fbc41&quot;],[0.9,&quot;#4d9221&quot;],[1,&quot;#276419&quot;]]},&quot;xaxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;,&quot;title&quot;:{&quot;standoff&quot;:15},&quot;zerolinecolor&quot;:&quot;white&quot;,&quot;automargin&quot;:true,&quot;zerolinewidth&quot;:2},&quot;yaxis&quot;:{&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;ticks&quot;:&quot;&quot;,&quot;title&quot;:{&quot;standoff&quot;:15},&quot;zerolinecolor&quot;:&quot;white&quot;,&quot;automargin&quot;:true,&quot;zerolinewidth&quot;:2},&quot;scene&quot;:{&quot;xaxis&quot;:{&quot;backgroundcolor&quot;:&quot;#E5ECF6&quot;,&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;showbackground&quot;:true,&quot;ticks&quot;:&quot;&quot;,&quot;zerolinecolor&quot;:&quot;white&quot;,&quot;gridwidth&quot;:2},&quot;yaxis&quot;:{&quot;backgroundcolor&quot;:&quot;#E5ECF6&quot;,&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;showbackground&quot;:true,&quot;ticks&quot;:&quot;&quot;,&quot;zerolinecolor&quot;:&quot;white&quot;,&quot;gridwidth&quot;:2},&quot;zaxis&quot;:{&quot;backgroundcolor&quot;:&quot;#E5ECF6&quot;,&quot;gridcolor&quot;:&quot;white&quot;,&quot;linecolor&quot;:&quot;white&quot;,&quot;showbackground&quot;:true,&quot;ticks&quot;:&quot;&quot;,&quot;zerolinecolor&quot;:&quot;white&quot;,&quot;gridwidth&quot;:2}},&quot;shapedefaults&quot;:{&quot;line&quot;:{&quot;color&quot;:&quot;#2a3f5f&quot;}},&quot;annotationdefaults&quot;:{&quot;arrowcolor&quot;:&quot;#2a3f5f&quot;,&quot;arrowhead&quot;:0,&quot;arrowwidth&quot;:1},&quot;geo&quot;:{&quot;bgcolor&quot;:&quot;white&quot;,&quot;landcolor&quot;:&quot;#E5ECF6&quot;,&quot;subunitcolor&quot;:&quot;white&quot;,&quot;showland&quot;:true,&quot;showlakes&quot;:true,&quot;lakecolor&quot;:&quot;white&quot;},&quot;title&quot;:{&quot;x&quot;:0.05},&quot;mapbox&quot;:{&quot;style&quot;:&quot;light&quot;}}},&quot;xaxis&quot;:{&quot;visible&quot;:false},&quot;yaxis&quot;:{&quot;visible&quot;:false},&quot;showlegend&quot;:false,&quot;title&quot;:{&quot;text&quot;:&quot;Star for product B005Y586QQ (Top-10)&quot;}},                        {&quot;responsive&quot;: true}                    ).then(function(){</code></pre>
+<p>var gd = document.getElementById(‘cc593f5d-70c7-44c0-9b0d-5cfd6c78d96c’); var x = new MutationObserver(function (mutations, observer) {{ var display = window.getComputedStyle(gd).display; if (!display || display === ‘none’) {{ console.log([gd, ‘removed!’]); Plotly.purge(gd); observer.disconnect(); }} }});</p>
+<p>// Listen for the removal of the full notebook cells var notebookContainer = gd.closest(‘#notebook-container’); if (notebookContainer) {{ x.observe(notebookContainer, {childList: true}); }}</p>
+<p>// Listen for the clearing of the current output cell var outputEl = gd.closest(‘.output’); if (outputEl) {{ x.observe(outputEl, {childList: true}); }}</p>
+<pre><code>                    })                };                            &lt;/script&gt;        &lt;/div&gt;</code></pre>
+</body>
+</html>
+<h2 id="notes-conclusions">10. Notes &amp; Conclusions</h2>
+<ul>
+<li><strong>Weights</strong> in the graph represent the number of <strong>shared positive raters</strong>. This approach may tend to favor very popular products. To mitigate this, consider exploring alternative similarity measures like Jaccard or Cosine similarity, which normalize by popularity.</li>
+<li><strong>Cold start problem</strong>: Items with very few interactions will have weak or no connections in the graph, making recommendations difficult for these items.</li>
+<li><strong>Scalability</strong>: The use of sparse matrices significantly improves memory and time efficiency for handling large datasets. For even larger subsets, increasing the minimum degree thresholds when trimming the data can further help manage the graph size.</li>
+<li><strong>Extensions</strong>: Several avenues for improvement exist, including:
+<ul>
+<li>Implementing cosine or Jaccard similarities for a popularity-normalized view of product relationships.</li>
+<li>Incorporating product metadata (e.g., categories, descriptions) to enhance recommendations.</li>
+<li>Combining this collaborative filtering approach with popularity-based baselines to provide a more robust recommendation system, especially for cold-start items.</li>
+</ul></li>
+</ul>
+<p>The network projection and neighbor finding correctly handle the weights and provide a deterministic ordering of neighbors.</p>
